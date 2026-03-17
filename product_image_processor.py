@@ -326,8 +326,8 @@ class ImageProcessorApp(ImageProcessorCore):
         
         # Console Output - Now in its own frame NOT inside the scrollable area
         # This keeps the logs visible even when scrolling settings
-        console_frame = tk.Frame(self.root, padx=15, pady=(5, 15))
-        console_frame.pack(fill=tk.BOTH, expand=False, side=tk.BOTTOM) # expand=False to not eat everything, but we can tune this
+        console_frame = tk.Frame(self.root, padx=15)
+        console_frame.pack(fill=tk.BOTH, expand=False, side=tk.BOTTOM, pady=(5, 15)) # expand=False to not eat everything, but we can tune this
 
         log_label_frame = tk.LabelFrame(console_frame, text="Console Output", padx=5, pady=5)
         log_label_frame.pack(fill=tk.BOTH, expand=True)
