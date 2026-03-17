@@ -1,0 +1,22 @@
+UPGRADE & UPDATE LOG - Image Fetcher & Processor
+===============================================
+
+v2.1.0 - 2026-03-17
+-------------------
+[GUI & UX]
+- Added High DPI Awareness: UI is now sharp and correctly scaled on 1080p+ screens.
+- Responsive Layout: Implemented a scrollable settings container to prevent UI cut-off on low-res displays.
+- Flexible Console: Enlarged the console output and optimized it to fill remaining vertical space.
+- Mouse Scroll Support: Enabled mouse wheel scrolling for the entire settings area.
+- Layout Fix: Corrected packing order to ensure Upload Settings and Action Buttons are always visible.
+
+[Core / Scraping]
+- Amazon Extraction Fix: Implemented robust parsing for 'colorImages' JavaScript objects (handling single-quote variations).
+- Enhanced Scavenger: Improved regex fallback to reliably extract high-res images when structured data fails.
+
+[Systems & Build]
+- Hotfix: Resolved startup crash (TclError) caused by asymmetric padding in legacy Tcl versions.
+- Icon Update: Integrated new high-resolution application icon (.ico) across all executables.
+- Dependency Cleanup: Removed bloated 'rembg[cli]' requirements to reduce install size.
+- Build Automation: Integrated rebuilding of obfuscated exes into the local workflow.
+- GitHub Integration: Configured remote repository and optimized .gitignore for development.
