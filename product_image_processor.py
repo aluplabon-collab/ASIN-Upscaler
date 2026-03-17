@@ -141,6 +141,9 @@ class ImageProcessorApp(ImageProcessorCore):
         self.canvas.create_window((0, 0), window=self.main_frame, anchor="nw")
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
+        # Enable mouse wheel scrolling
+        self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
         # Pack canvas and scrollbar (they take upper part)
         # Note: We use grid or pack carefully here to allow the log area at bottom.
         # --- Layout setup ---
