@@ -15,6 +15,13 @@ from PIL import Image # type: ignore
 import tkinter as tk
 from tkinter import filedialog, scrolledtext, messagebox, ttk
 
+# High DPI awareness for Windows
+try:
+    from ctypes import windll
+    windll.shcore.SetProcessDpiAwareness(1)
+except Exception:
+    pass
+
 # Optional rembg block
 import importlib.util
 # rembg is local-imported when needed
@@ -84,7 +91,9 @@ class ImageProcessorApp(ImageProcessorCore):
         self.root = root
         try:
             self.root.title("E-commerce Image Fetcher & Processor")
-            self.root.geometry("750x950")
+            # Increased base width for a more spacious feel, height is more flexible now
+            self.root.geometry("850x900")
+            self.root.minsize(700, 600)
             
             # Apply custom icon to the application window
             base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
@@ -116,8 +125,39 @@ class ImageProcessorApp(ImageProcessorCore):
         self.pause_event = threading.Event()
         
     def create_widgets(self):
-        main_frame = tk.Frame(self.root, padx=15, pady=15)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        # --- Scrollable Container for Settings ---
+        self.canvas = tk.Canvas(self.root, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=self.canvas.yview)
+        
+        # main_frame becomes the inner frame inside the canvas
+        self.main_frame = tk.Frame(self.canvas, padx=15, pady=5)
+        
+        self.main_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+
+        # Create a window inside the canvas to hold main_frame
+        self.canvas.create_window((0, 0), window=self.main_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+        # Pack canvas and scrollbar (they take upper part)
+        # Note: We use grid or pack carefully here to allow the log area at bottom.
+        # Actually, let's put everything in a main paned window or just pack efficiently.
+        
+        # --- Layout setup ---
+        # Upper part (Settings): Scrollable
+        # Lower part (Console): Fixed at bottom or filling remaining space
+        
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # To handle window resize and keeping main_frame width matched to canvas
+        def _on_canvas_configure(event):
+            self.canvas.itemconfig(self.canvas.find_withtag("all")[0], width=event.width)
+        self.canvas.bind("<Configure>", _on_canvas_configure)
+
+        main_frame = self.main_frame
 
         # Output Directory Configuration
         out_frame = tk.LabelFrame(main_frame, text="Output Folder", padx=10, pady=5)
@@ -284,11 +324,15 @@ class ImageProcessorApp(ImageProcessorCore):
         self.stop_btn = tk.Button(action_frame, text="Stop", command=self.stop_processing, bg="#F44336", fg="white", font=("Arial", 10, "bold"), padx=10, pady=5, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, padx=5)
         
-        # Log
-        log_frame = tk.LabelFrame(main_frame, text="Console Output", padx=5, pady=5)
-        log_frame.pack(fill=tk.BOTH, expand=True)
+        # Console Output - Now in its own frame NOT inside the scrollable area
+        # This keeps the logs visible even when scrolling settings
+        console_frame = tk.Frame(self.root, padx=15, pady=(5, 15))
+        console_frame.pack(fill=tk.BOTH, expand=False, side=tk.BOTTOM) # expand=False to not eat everything, but we can tune this
+
+        log_label_frame = tk.LabelFrame(console_frame, text="Console Output", padx=5, pady=5)
+        log_label_frame.pack(fill=tk.BOTH, expand=True)
         
-        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state='normal', height=18)
+        self.log_text = scrolledtext.ScrolledText(log_label_frame, wrap=tk.WORD, state='normal', height=20)
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
     def toggle_pause(self):

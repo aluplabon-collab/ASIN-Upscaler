@@ -1,5 +1,5 @@
 @echo off
-set "PYTHON_EXE=.venv\Scripts\python.exe"
+set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
 
 echo ============================================================
 echo  Installing all required dependencies including PyArmor...
@@ -7,23 +7,23 @@ echo ============================================================
 echo.
 
 echo [Step 1] Upgrading pip...
-%PYTHON_EXE% -m pip install --upgrade pip --no-warn-script-location
+"%PYTHON_EXE%" -m pip install --upgrade pip --no-warn-script-location
 
 echo.
 echo [Step 2] Installing core packages (requests, Pillow)...
-%PYTHON_EXE% -m pip install requests Pillow --no-warn-script-location
+"%PYTHON_EXE%" -m pip install requests Pillow --no-warn-script-location
 
 echo.
 echo [Step 3] Installing rembg with CPU support...
-%PYTHON_EXE% -m pip install "rembg[cpu]" --no-warn-script-location
+"%PYTHON_EXE%" -m pip install "rembg[cpu]" --no-warn-script-location
 
 echo.
 echo [Step 4] Installing Google API libraries...
-%PYTHON_EXE% -m pip install gspread google-auth google-auth-oauthlib python-dotenv --no-warn-script-location
+"%PYTHON_EXE%" -m pip install gspread google-auth google-auth-oauthlib python-dotenv --no-warn-script-location
 
 echo.
 echo [Step 5] Installing PyInstaller and PyArmor (obfuscation tools)...
-%PYTHON_EXE% -m pip install pyinstaller pyarmor --no-warn-script-location
+"%PYTHON_EXE%" -m pip install pyinstaller pyarmor --no-warn-script-location
 
 echo.
 echo ============================================================
@@ -31,14 +31,18 @@ echo  All dependencies installed! Starting obfuscation...
 echo ============================================================
 echo.
 
-if exist "obfuscated" rmdir /s /q "obfuscated"
-mkdir "obfuscated"
+if not exist "obfuscated" mkdir "obfuscated"
+if not exist "obfuscated\keygen" mkdir "obfuscated\keygen"
 
 echo [Step 6] Running PyArmor to obfuscate...
-%PYTHON_EXE% -m pyarmor.cli gen -O "obfuscated" product_image_processor.py image_processor_core.py gsheet_handler.py
-%PYTHON_EXE% -m pyarmor.cli gen -O "obfuscated/keygen" keygen.py
-copy "license_utils.py" "obfuscated"
-copy "license_utils.py" "obfuscated\keygen"
+"%PYTHON_EXE%" -m pyarmor.cli gen -O "obfuscated" product_image_processor.py image_processor_core.py gsheet_handler.py
+if errorlevel 1 exit /b 1
+
+"%PYTHON_EXE%" -m pyarmor.cli gen -O "obfuscated/keygen" keygen.py
+if errorlevel 1 exit /b 1
+
+copy "license_utils.py" "obfuscated" /Y
+copy "license_utils.py" "obfuscated\keygen" /Y
 
 echo.
 echo ============================================================
@@ -49,7 +53,7 @@ echo.
 cd "obfuscated"
 
 echo [Building Main Project...]
-%PYTHON_EXE% -m PyInstaller ^
+"%PYTHON_EXE%" -m PyInstaller ^
     --noconfirm ^
     --onefile ^
     --windowed ^
@@ -82,7 +86,7 @@ echo [Building Main Project...]
 
 echo [Building Keygen...]
 cd "keygen"
-%PYTHON_EXE% -m PyInstaller ^
+"%PYTHON_EXE%" -m PyInstaller ^
     --noconfirm ^
     --onefile ^
     --windowed ^
@@ -101,4 +105,3 @@ echo  Build complete!
 echo  Find the executables inside "obfuscated\dist" and "obfuscated\keygen\dist".
 echo  Run "Image_Processor_Obfuscated.exe" and "Image_Processor_Keygen.exe" directly.
 echo ============================================================
-pause

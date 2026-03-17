@@ -1,4 +1,13 @@
 @echo off
+echo ====================================
+echo  Rebuilding Obfuscated Executables...
+echo ====================================
+call build_obfuscated_executable.bat
+
+echo.
+echo ====================================
+echo  Starting Git Push...
+echo ====================================
 set /p commit_msg="Enter commit message (default: Update): "
 if "%commit_msg%"=="" set commit_msg=Update
 
@@ -14,6 +23,6 @@ git push origin main
 
 echo.
 echo ====================================
-echo  Git Push Complete!
+echo  Build and Git Push Complete!
 echo ====================================
 pause
