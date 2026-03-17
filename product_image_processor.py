@@ -143,15 +143,10 @@ class ImageProcessorApp(ImageProcessorCore):
 
         # Pack canvas and scrollbar (they take upper part)
         # Note: We use grid or pack carefully here to allow the log area at bottom.
-        # Actually, let's put everything in a main paned window or just pack efficiently.
-        
         # --- Layout setup ---
         # Upper part (Settings): Scrollable
         # Lower part (Console): Fixed at bottom or filling remaining space
         
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
         # To handle window resize and keeping main_frame width matched to canvas
         def _on_canvas_configure(event):
             self.canvas.itemconfig(self.canvas.find_withtag("all")[0], width=event.width)
@@ -324,16 +319,24 @@ class ImageProcessorApp(ImageProcessorCore):
         self.stop_btn = tk.Button(action_frame, text="Stop", command=self.stop_processing, bg="#F44336", fg="white", font=("Arial", 10, "bold"), padx=10, pady=5, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, padx=5)
         
-        # Console Output - Now in its own frame NOT inside the scrollable area
-        # This keeps the logs visible even when scrolling settings
+        # --- Final Layout Packing ---
+        # We pack from the edges inward
+        
+        # 1. Console at the very bottom (Fixed height mostly)
         console_frame = tk.Frame(self.root, padx=15)
-        console_frame.pack(fill=tk.BOTH, expand=False, side=tk.BOTTOM, pady=(5, 15)) # expand=False to not eat everything, but we can tune this
+        console_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 15))
 
         log_label_frame = tk.LabelFrame(console_frame, text="Console Output", padx=5, pady=5)
         log_label_frame.pack(fill=tk.BOTH, expand=True)
         
-        self.log_text = scrolledtext.ScrolledText(log_label_frame, wrap=tk.WORD, state='normal', height=20)
+        self.log_text = scrolledtext.ScrolledText(log_label_frame, wrap=tk.WORD, state='normal', height=15)
         self.log_text.pack(fill=tk.BOTH, expand=True)
+
+        # 2. Scrollbar on the right
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 3. Canvas fills the remaining top/middle space
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     def toggle_pause(self):
         if self.pause_event.is_set():
