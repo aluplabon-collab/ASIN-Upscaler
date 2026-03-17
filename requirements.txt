@@ -1,6 +1,6 @@
 requests
 Pillow
-rembg[cli,cpu]
+rembg[cpu]
 gspread
 google-auth
 google-auth-oauthlib
