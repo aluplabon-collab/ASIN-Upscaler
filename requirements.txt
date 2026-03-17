@@ -1,0 +1,9 @@
+requests
+Pillow
+rembg[cli,cpu]
+gspread
+google-auth
+google-auth-oauthlib
+pyinstaller
+pyarmor
+python-dotenv

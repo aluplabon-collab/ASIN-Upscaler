@@ -1,0 +1,18 @@
+{
+    "include": [
+        "d:/Others/Work/Prace BD/Development/Upscaler Project"
+    ],
+    "exclude": [
+        "**/__pycache__",
+        "d:/Others/Work/Prace BD/Development/Upscaler Project/.venv"
+    ],
+    "venvPath": "d:/Others/Work/Prace BD/Development/Upscaler Project",
+    "venv": ".venv",
+    "reportMissingImports": true,
+    "pythonVersion": "3.12",
+    "pythonPlatform": "Windows",
+    "typeCheckingMode": "basic",
+    "extraPaths": [
+        "d:/Others/Work/Prace BD/Development/Upscaler Project"
+    ]
+}
