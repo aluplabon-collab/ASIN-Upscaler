@@ -80,8 +80,8 @@ class UpscalerApp:
         self.create_widgets()
         
         # Redirect stdout
-        import sys
-        if not hasattr(sys.stdout, 'outputs'):
+        sys_imported = sys
+        if not hasattr(sys_imported.stdout, 'outputs'):
             class MultiplexRedirect:
                 outputs = []
                 def write(self, string):
@@ -237,7 +237,7 @@ class UpscalerApp:
         
         try:
             # Run the OAuth flow to generate the token (name is auto-detected)
-            handler = GSheetHandler(json_key, token_name=None)
+            handler = GSheetHandler(json_key, token_name=None) # type: ignore
             new_filename = handler.token_name
             
             self._refresh_account_list()
@@ -272,7 +272,7 @@ class UpscalerApp:
             if new_w == w and new_h == h:
                 out = im.copy()
             else:
-                out = im.resize((new_w, new_h), resample=Image.LANCZOS)
+                out = im.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
             buf = BytesIO()
             out.save(buf, format="JPEG", quality=92)
             buf.seek(0)

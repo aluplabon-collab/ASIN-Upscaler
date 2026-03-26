@@ -451,6 +451,8 @@ class ImageProcessorApp(ImageProcessorCore):
                     continue
                 if x < 0 or x >= w or y < 0 or y >= h:
                     continue
+                if pixels is None:
+                    continue
                 px = pixels[x, y]
                 if not is_white(px):
                     continue
@@ -513,7 +515,7 @@ class ImageProcessorApp(ImageProcessorCore):
                 values = sheet.col_values(asin_col)[header_row:]  # Row 6 is index 5
                 
                 # Strip trailing empty strings to avoid loading 1000 blank bottom rows
-                while values and not values[-1].strip():
+                while values and not str(values[-1]).strip():
                     values.pop()
                 
                 if not values:
@@ -522,7 +524,7 @@ class ImageProcessorApp(ImageProcessorCore):
 
                 def update_ui():
                     self.bulk_text.delete("1.0", tk.END)
-                    self.bulk_text.insert(tk.END, "\n".join(values))
+                    self.bulk_text.insert(tk.END, "\n".join(str(v) for v in values))
                     messagebox.showinfo("Success", f"Successfully loaded {len(values)} line(s) from sheet.")
                     print(f"[SHEET] Loaded {len(values)} lines into input area (preserving row spacing).")
 

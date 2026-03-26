@@ -157,10 +157,10 @@ class GSheetHandler:
         vals = sheet.col_values(col_index)
         
         # Simple heuristic: if first row looks like a header, skip it
-        if vals and ("asin" in vals[0].lower() or "id" in vals[0].lower()):
+        if vals and vals[0] and ("asin" in str(vals[0]).lower() or "id" in str(vals[0]).lower()):
             vals = vals[1:]
             
-        return [v.strip() for v in vals if v.strip()]
+        return [str(v).strip() for v in vals if v and str(v).strip()]
 
     @retry_with_backoff
     def init_headers(self, sheet_id, sheet_name):
@@ -168,7 +168,7 @@ class GSheetHandler:
         sheet = self.get_sheet(sheet_id, sheet_name)
         # Import here to avoid circular dependency at top level if any
         try:
-            from amazon_scraper import AmazonScraper
+            from amazon_scraper import AmazonScraper # type: ignore
             target_headers = AmazonScraper.CSV_HEADERS
         except ImportError:
             # Fallback headers if amazon_scraper is missing

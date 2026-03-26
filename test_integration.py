@@ -38,7 +38,7 @@ def test_sheet_logic():
         if col_idx is None:
             col_idx = len(headers) + 1
             headers.append("Item photo URL")
-            sheet.update(f"A5", [headers]) # update row 5 headers
+            sheet.update(values=[headers], range_name=f"A5") # update row 5 headers
             print("  Created new 'Item photo URL' column.")
 
         row_num = 5 + row_idx

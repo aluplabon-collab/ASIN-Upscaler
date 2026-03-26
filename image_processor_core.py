@@ -1,4 +1,40 @@
 # Note: rembg, gspread, and google libraries are now lazy-loaded inside functions.
+import ssl
+import requests # type: ignore
+import urllib3
+import time
+import base64
+import os
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from requests.adapters import HTTPAdapter
+
+
+# ---------------------------------------------------------------------------
+# Custom TLS Adapter — fixes SSLEOFError on some servers
+# ---------------------------------------------------------------------------
+
+class _TLSAdapter(HTTPAdapter):
+    """A transport adapter that negotiates TLS without strict hostname checks.
+    Fixes 'EOF occurred in violation of protocol' errors on servers
+    that have non-standard TLS implementations or abrupt close_notify behaviour.
+    """
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        # Allow TLS 1.2 and 1.3 — do NOT lock to a single version
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        kwargs['ssl_context'] = ctx
+        super().init_poolmanager(*args, **kwargs)
+
+
+def _make_ssl_session():
+    """Return a requests.Session pre-wired with the lenient TLS adapter."""
+    session = requests.Session()
+    adapter = _TLSAdapter()
+    session.mount('https://', adapter)
+    session.verify = False
+    return session
 
 
 # ---------------------------------------------------------------------------
@@ -8,9 +44,10 @@
 def _vps_create_folder(vps_base_url, folder_name):
     """Ensure the named folder exists on the VPS pictureDrive server."""
     api_url = vps_base_url.rstrip('/') + '/create-folder'
+    session = _make_ssl_session()
     for attempt in range(3):
         try:
-            resp = requests.post(api_url, json={'folderName': folder_name}, timeout=10, verify=False)
+            resp = session.post(api_url, json={'folderName': folder_name}, timeout=15)
             resp.raise_for_status()
             data = resp.json()
             if not data.get('success'):
@@ -38,11 +75,14 @@ def _vps_upload_image(vps_base_url, image_bytes_buf, folder_name, filename):
     }
     api_url = vps_base_url.rstrip('/') + '/upload'
     
-    for attempt in range(4):
+    for attempt in range(5):
         try:
+            # Use a fresh SSL session each attempt — avoids reusing a broken connection
+            session = _make_ssl_session()
             print(f"  [DEBUG] Uploading to VPS: {api_url} (Attempt {attempt+1})")
-            resp = requests.post(api_url, json=payload,
-                                 headers={'Content-Type': 'application/json'}, timeout=60, verify=False)
+            resp = session.post(api_url, json=payload,
+                                headers={'Content-Type': 'application/json'},
+                                timeout=90)
             resp.raise_for_status()
             data = resp.json()
             if data.get('success'):
@@ -53,12 +93,21 @@ def _vps_upload_image(vps_base_url, image_bytes_buf, folder_name, filename):
             else:
                 print(f"  [ERROR] VPS upload API returned failure: {data}")
                 return ''
+        except ssl.SSLError as ssl_e:
+            # SSL-specific retry with longer backoff — server TLS issue
+            wait = 3 * (2 ** attempt)
+            print(f"  [WARN] VPS SSL error on attempt {attempt+1}: {ssl_e}  (retrying in {wait}s)")
+            if attempt < 4:
+                time.sleep(wait)
+            else:
+                print(f"  [ERROR] VPS upload definitively failed after 5 attempts (SSLError).")
+                return ''
         except Exception as e:
             print(f"  [WARN] VPS upload failed on attempt {attempt+1}: {e}")
-            if attempt < 3:
+            if attempt < 4:
                 time.sleep(2 ** attempt)
             else:
-                print(f"  [ERROR] VPS upload definitively failed after 4 attempts.")
+                print(f"  [ERROR] VPS upload definitively failed after 5 attempts.")
                 return ''
 
 
@@ -129,14 +178,11 @@ def _get_sheet(sheet_id, worksheet_name):
     except Exception as e:
         raise RuntimeError(f"Failed to connect to Google Sheet: {e}")
 
-import os, sys, time, re, base64
+import sys, re
 import typing
 from typing import List, Optional
 from io import BytesIO
-import requests # type: ignore
 from PIL import Image, ImageDraw # type: ignore
-import urllib3 # type: ignore
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class ImageProcessorCore:
     def _strip_amazon_image_size(self, url):
@@ -415,7 +461,7 @@ class ImageProcessorCore:
                 scale_factor = max(0.30, min(0.95, product_scale / 100.0))
                 new_w = int(image_width * scale_factor)
                 new_h = int(image_height * scale_factor)
-                scaled_base = base_image.resize((new_w, new_h), Image.LANCZOS)
+                scaled_base = base_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
                 product_x = (image_width - new_w) // 2
                 product_y = (image_height - new_h) // 2
                 # Force fully opaque paste so product always shows
@@ -427,7 +473,7 @@ class ImageProcessorCore:
                 result.paste(scaled_base, (product_x, product_y))
 
                 # 3. Scale frame to full output size
-                frame = watermark.resize((image_width, image_height), Image.LANCZOS)
+                frame = watermark.resize((image_width, image_height), Image.Resampling.LANCZOS)
 
                 # 4. Check if the frame has any transparent pixels in the center
                 #    If yes → paste frame on top (transparent center lets product show)
@@ -436,8 +482,9 @@ class ImageProcessorCore:
                 # Sample center pixel alpha
                 cx, cy = image_width // 2, image_height // 2
                 center_alpha = frame_alpha.getpixel((cx, cy))
+                alpha_val = center_alpha[0] if isinstance(center_alpha, tuple) else center_alpha
 
-                if center_alpha < 30:
+                if alpha_val is not None and alpha_val < 30:
                     # Frame has transparent center → paste frame on product (ideal case, like shoe example)
                     result.paste(frame, (0, 0), mask=frame)
                 else:
@@ -463,7 +510,7 @@ class ImageProcessorCore:
                     (image_width - wm_target_w) // 2,
                     (image_height - wm_target_h) // 2
                 )
-                wm_resized = watermark.resize((wm_target_w, wm_target_h), Image.LANCZOS)
+                wm_resized = watermark.resize((wm_target_w, wm_target_h), Image.Resampling.LANCZOS)
                 transparent.paste(wm_resized, position, mask=wm_resized)
 
                 final_white_bg = Image.new("RGB", transparent.size, (255, 255, 255))
@@ -508,12 +555,15 @@ class ImageProcessorCore:
                         from rembg import remove # type: ignore
                         img_bytes = BytesIO()
                         img.save(img_bytes, format='PNG')
-                        output_bytes = remove(img_bytes.getvalue())
+                        import typing
+                        output_bytes = typing.cast(bytes, remove(img_bytes.getvalue()))
                         img_bg_removed = Image.open(BytesIO(output_bytes)).convert("RGBA")
                         
                         # Fix: check if rembg removed too much (e.g. subject is completely gone)
                         alpha_channel = img_bg_removed.split()[3]
-                        if alpha_channel.getextrema()[1] < 10:
+                        extrema = alpha_channel.getextrema()
+                        max_alpha = extrema[1] if isinstance(extrema, tuple) else extrema
+                        if max_alpha is not None and max_alpha < 10: # type: ignore
                             print("  [WARN] AI background removal resulted in an empty image. Proceeding with original image.")
                         else:
                             # Create a white canvas and paste the extracted subject onto it
@@ -551,7 +601,7 @@ class ImageProcessorCore:
                 # Neither set — keep original size
                 new_w, new_h = w, h
                 
-            img = img.resize((new_w, new_h), Image.LANCZOS)
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
             # 3. Add Watermark (only to the first image)
             if is_first and watermark_path and os.path.exists(watermark_path):

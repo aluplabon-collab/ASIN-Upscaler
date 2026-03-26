@@ -159,7 +159,7 @@ def upscale_image_bytes(img_bytes, target=TARGET_SIZE):
         if new_w == w and new_h == h:
             out = im.copy()
         else:
-            out = im.resize((new_w, new_h), resample=Image.LANCZOS)
+            out = im.resize((new_w, new_h), resample=Image.Resampling.LANCZOS)
         buf = BytesIO()
         out.save(buf, format="JPEG", quality=92)
         buf.seek(0)
