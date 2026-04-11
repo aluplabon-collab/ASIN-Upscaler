@@ -208,6 +208,30 @@ def fetch_images_from_asin(asin, retries=3, delay=2):
     return images
 
 
+def _make_ssl_session():
+    """Return a requests.Session pre-wired with the lenient TLS adapter (fixes SSLEOFError + RemoteDisconnected)."""
+    import ssl
+    from requests.adapters import HTTPAdapter
+    class _TLSAdapter(HTTPAdapter):
+        def __init__(self, **kwargs):
+            kwargs.setdefault('pool_connections', 1)
+            kwargs.setdefault('pool_maxsize', 1)
+            kwargs.setdefault('max_retries', 0)
+            super().__init__(**kwargs)
+        def init_poolmanager(self, *args, **kwargs):
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            ctx.options |= getattr(ssl, 'OP_LEGACY_SERVER_CONNECT', 0x4)
+            kwargs['ssl_context'] = ctx
+            super().init_poolmanager(*args, **kwargs)
+    session = requests.Session()
+    session.mount('https://', _TLSAdapter())
+    session.verify = False
+    session.headers.update({'Connection': 'close'})
+    return session
+
 def create_vps_folder(folder_name):
     """Ensure the named folder exists on the pictureDrive server.
 
@@ -222,12 +246,13 @@ def create_vps_folder(folder_name):
             base = f"{VPS_SCHEME}://{VPS_IP}:{VPS_PORT}"
         api_url = f"{base}/create-folder"
         print(f"  [DEBUG] creating VPS folder via {api_url}")
-        resp = requests.post(api_url, json={"folderName": folder_name}, timeout=10,
-                             verify=VPS_VERIFY_SSL)
+        session = _make_ssl_session()
+        resp = session.post(api_url, json={"folderName": folder_name}, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         if not data.get("success"):
             print(f"  [WARN] create-folder failed: {data}")
+        session.close()
         return True
     except Exception as e:
         print(f"  [WARN] create-folder request failed: {e}")
@@ -237,42 +262,71 @@ def create_vps_folder(folder_name):
 def upload_to_vps_api(image_bytes_buf, folder_name, filename):
     """Upload upscaled image bytes to the VPS and return the public URL.
 
-    No local file is written; the image is base64‑encoded in memory and sent
-    directly to the `/upload` endpoint.  The connection parameters honour the
-    same scheme/port/ssl configuration used by ``create_vps_folder``.
+    No local file is written; the image is base64-encoded in memory and sent
+    directly to the `/upload` endpoint.  Retries up to 7 times with exponential
+    backoff on SSL/connection errors.
     """
+    import ssl
     if not VPS_IP or VPS_IP == "127.0.0.1":
         return None
-    try:
-        create_vps_folder(folder_name)
-        base64_encoded = base64.b64encode(image_bytes_buf.getvalue()).decode('utf-8')
-        payload = {
-            "folderName": folder_name,
-            "fileName": filename,
-            "imageBase64": base64_encoded
-        }
-        if (VPS_SCHEME == "https" and VPS_PORT in ("443", "")) or (
-                VPS_SCHEME == "http" and VPS_PORT in ("80", "")):
-            base = f"{VPS_SCHEME}://{VPS_IP}"
-        else:
-            base = f"{VPS_SCHEME}://{VPS_IP}:{VPS_PORT}"
-        api_url = f"{base}/upload"
-        print(f"  [DEBUG] uploading to VPS via {api_url}")
-        headers = {'Content-Type': 'application/json'}
-        response = requests.post(api_url, json=payload, headers=headers,
-                                 verify=VPS_VERIFY_SSL)
-        response.raise_for_status()
-        data = response.json()
-        if data.get('success'):
-            relative_url = data.get('url')
-            public_url = f"https://images.thedailytraveller.online{relative_url}"
-            return public_url
-        else:
-            print(f"  [ERROR] VPS API returned failure: {data}")
-            return None
-    except Exception as e:
-        print(f"  [ERROR] VPS Upload failed: {e}")
-        return None
+    
+    create_vps_folder(folder_name)
+    base64_encoded = base64.b64encode(image_bytes_buf.getvalue()).decode('utf-8')
+    payload = {
+        "folderName": folder_name,
+        "fileName": filename,
+        "imageBase64": base64_encoded
+    }
+    if (VPS_SCHEME == "https" and VPS_PORT in ("443", "")) or (
+            VPS_SCHEME == "http" and VPS_PORT in ("80", "")):
+        base = f"{VPS_SCHEME}://{VPS_IP}"
+    else:
+        base = f"{VPS_SCHEME}://{VPS_IP}:{VPS_PORT}"
+    api_url = f"{base}/upload"
+
+    MAX_ATTEMPTS = 8
+    for attempt in range(MAX_ATTEMPTS):
+        session = None
+        try:
+            if attempt % 2 == 0:
+                session = _make_ssl_session()
+            else:
+                session = requests.Session()
+                session.verify = False
+                session.headers.update({'Connection': 'close'})
+                
+            print(f"  [DEBUG] Uploading to VPS: {api_url} (Attempt {attempt+1}/{MAX_ATTEMPTS})")
+            headers = {'Content-Type': 'application/json'}
+            response = session.post(api_url, json=payload, headers=headers, timeout=60)
+            response.raise_for_status()
+            data = response.json()
+            if data.get('success'):
+                relative_url = data.get('url')
+                public_url = f"https://images.thedailytraveller.online{relative_url}"
+                print(f"  [OK] VPS upload succeeded: {public_url}")
+                return public_url
+            else:
+                print(f"  [ERROR] VPS API returned failure: {data}")
+                return None
+        except (ssl.SSLError, requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError, ConnectionError) as e:
+            wait = min(15, 3 + (attempt * 3))  # 3, 6, 9, 12, 15, 15...
+            print(f"  [WARN] VPS upload failed on attempt {attempt+1}: {e}  (retrying in {wait}s)")
+            if attempt < MAX_ATTEMPTS - 1:
+                time.sleep(wait)
+            else:
+                print(f"  [ERROR] VPS upload definitively failed after {MAX_ATTEMPTS} attempts.")
+                return None
+        except Exception as e:
+            wait = 2 + attempt  # 2, 3, 4, 5...
+            print(f"  [WARN] VPS upload failed on attempt {attempt+1}: {e}  (retrying in {wait}s)")
+            if attempt < MAX_ATTEMPTS - 1:
+                time.sleep(wait)
+            else:
+                print(f"  [ERROR] VPS upload definitively failed after {MAX_ATTEMPTS} attempts.")
+                return None
+        finally:
+            if session:
+                session.close()
 
 
 def process_line(line, line_idx, sheet=None):

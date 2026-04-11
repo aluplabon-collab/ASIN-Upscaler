@@ -1,6 +1,41 @@
 UPGRADE & UPDATE LOG - Image Fetcher & Processor
 ===============================================
 
+v2.3.2 - 2026-04-11
+-------------------
+[Build]
+- Rebuild: Obfuscated executables rebuilt to incorporate latest changes.
+
+v2.3.1 - 2026-04-07
+-------------------
+[Core / Connectivity]
+- VPS Upload Hotfix: Prevented "SSLEOFError" drops under high load by combining custom SSL sessions with standard Requests sessions automatically on retry.
+- Upload Retry Tuning: Increased max VPS upload attempts back to 8 (from 5) and extended linear backoff to maximum 15s to give the remote server more time to recover from burst throttling.
+
+v2.3.0 - 2026-04-07
+-------------------
+[GUI & UX]
+- Smart Aspect Ratio Lock: When "Lock Aspect Ratio" is enabled, editing the width now auto-adjusts the height proportionally (and vice versa). The ratio stays perfectly synced as you type.
+- Clearer Labeling: Lock Aspect Ratio checkbox now reads "Auto-adjust other dimension" for better clarity.
+
+[Performance]
+- Concurrent Image Downloads: All product images (up to 5) are now pre-downloaded in parallel using a thread pool, significantly reducing per-product processing time.
+- Optimized Download Retries: Image download retry delays reduced from exponential to linear backoff (1s, 2s).
+
+v2.2.0 - 2026-03-27
+-------------------
+[Core / Connectivity]
+- SSL/TLS Fix for VPS: Added custom TlsAdapter and Session helper to resolve SSLEOFError and protocol violation issues during VPS uploads.
+- Resilient Uploads: Implemented exponential backoff and connection refreshing specifically for SSL-related failures.
+
+[GUI & Automation]
+- UI List Cleaning: Added automatic removal of successfully processed ASINs from the bulk text box to improve tracking.
+- Robust Sheet Loading: Enhanced gspread integration to handle non-string values and edge cases during row/column pulls.
+- Startup Optimization: Implemented lazy-loading for rembg, gspread, and Google API libraries to speed up initial GUI loading.
+
+[Systems]
+- Build System Update: Refined the rebuild workflow to ensure consistent environment handling during obfuscation.
+
 v2.1.0 - 2026-03-17
 -------------------
 [GUI & UX]

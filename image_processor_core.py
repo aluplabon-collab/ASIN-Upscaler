@@ -15,15 +15,28 @@ from requests.adapters import HTTPAdapter
 
 class _TLSAdapter(HTTPAdapter):
     """A transport adapter that negotiates TLS without strict hostname checks.
-    Fixes 'EOF occurred in violation of protocol' errors on servers
-    that have non-standard TLS implementations or abrupt close_notify behaviour.
+    Fixes 'EOF occurred in violation of protocol' and 'RemoteDisconnected'
+    errors on servers that have non-standard TLS implementations or drop
+    keep-alive connections under load.
+
+    Key measures:
+    - pool_connections=1, pool_maxsize=1  → virtually no connection reuse
+    - Connection: close header            → server won't keep the socket open
+    - OP_LEGACY_SERVER_CONNECT            → OpenSSL 3.x compat with older servers
     """
+    def __init__(self, **kwargs):
+        # Minimal pool so every request gets a near-fresh TCP+TLS connection
+        kwargs.setdefault('pool_connections', 1)
+        kwargs.setdefault('pool_maxsize', 1)
+        kwargs.setdefault('max_retries', 0)  # we handle retries ourselves
+        super().__init__(**kwargs)
+
     def init_poolmanager(self, *args, **kwargs):
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        # Allow TLS 1.2 and 1.3 — do NOT lock to a single version
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.options |= getattr(ssl, 'OP_LEGACY_SERVER_CONNECT', 0x4)
         kwargs['ssl_context'] = ctx
         super().init_poolmanager(*args, **kwargs)
 
@@ -34,6 +47,8 @@ def _make_ssl_session():
     adapter = _TLSAdapter()
     session.mount('https://', adapter)
     session.verify = False
+    # Force Connection: close on every request — prevents stale keep-alive
+    session.headers.update({'Connection': 'close'})
     return session
 
 
@@ -75,14 +90,22 @@ def _vps_upload_image(vps_base_url, image_bytes_buf, folder_name, filename):
     }
     api_url = vps_base_url.rstrip('/') + '/upload'
     
-    for attempt in range(5):
+    MAX_ATTEMPTS = 8
+    for attempt in range(MAX_ATTEMPTS):
+        session = None
         try:
-            # Use a fresh SSL session each attempt — avoids reusing a broken connection
-            session = _make_ssl_session()
-            print(f"  [DEBUG] Uploading to VPS: {api_url} (Attempt {attempt+1})")
+            # Alternate between custom SSL session and default requests object
+            if attempt % 2 == 0:
+                session = _make_ssl_session()
+            else:
+                session = requests.Session()
+                session.verify = False
+                session.headers.update({'Connection': 'close'})
+                
+            print(f"  [DEBUG] Uploading to VPS: {api_url} (Attempt {attempt+1}/{MAX_ATTEMPTS})")
             resp = session.post(api_url, json=payload,
                                 headers={'Content-Type': 'application/json'},
-                                timeout=90)
+                                timeout=60)
             resp.raise_for_status()
             data = resp.json()
             if data.get('success'):
@@ -93,22 +116,27 @@ def _vps_upload_image(vps_base_url, image_bytes_buf, folder_name, filename):
             else:
                 print(f"  [ERROR] VPS upload API returned failure: {data}")
                 return ''
-        except ssl.SSLError as ssl_e:
-            # SSL-specific retry with longer backoff — server TLS issue
-            wait = 3 * (2 ** attempt)
-            print(f"  [WARN] VPS SSL error on attempt {attempt+1}: {ssl_e}  (retrying in {wait}s)")
-            if attempt < 4:
+        except (ssl.SSLError, requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError, ConnectionError) as e:
+            # SSLEOFError, RemoteDisconnected, connection reset — all retryable
+            wait = min(15, 3 + (attempt * 3))  # 3, 6, 9, 12, 15, 15... 
+            print(f"  [WARN] VPS upload failed on attempt {attempt+1}: {e}  (retrying in {wait}s)")
+            if attempt < MAX_ATTEMPTS - 1:
                 time.sleep(wait)
             else:
-                print(f"  [ERROR] VPS upload definitively failed after 5 attempts (SSLError).")
+                print(f"  [ERROR] VPS upload definitively failed after {MAX_ATTEMPTS} attempts.")
                 return ''
         except Exception as e:
-            print(f"  [WARN] VPS upload failed on attempt {attempt+1}: {e}")
-            if attempt < 4:
-                time.sleep(2 ** attempt)
+            wait = 2 + attempt  # 2, 3, 4, 5...
+            print(f"  [WARN] VPS upload failed on attempt {attempt+1}: {e}  (retrying in {wait}s)")
+            if attempt < MAX_ATTEMPTS - 1:
+                time.sleep(wait)
             else:
-                print(f"  [ERROR] VPS upload definitively failed after 5 attempts.")
+                print(f"  [ERROR] VPS upload definitively failed after {MAX_ATTEMPTS} attempts.")
                 return ''
+        finally:
+            # Guarantee the session/sockets are fully closed before next attempt
+            if session:
+                session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -521,29 +549,34 @@ class ImageProcessorCore:
             print(f"[WARN] Failed to add watermark: {e}")
             return image_pil
 
-    def process_and_save_image(self, url, idx, is_first, out_folder, target_width, target_height, do_white_bg, watermark_path, is_template, vps_base_url='', vps_folder_name='', save_locally=True, product_scale=70, lock_aspect_ratio=True):
+    def _download_image_bytes(self, url):
+        """Download an image from a URL with retries. Returns raw bytes or raises."""
+        resp = None
+        for attempt in range(3):
+            try:
+                resp = requests.get(url, stream=True, timeout=15)
+                resp.raise_for_status()
+                return resp.content
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(1 + attempt)  # 1s, 2s
+                else:
+                    raise Exception(f"Failed to download image from {url} after 3 attempts: {e}")
+        raise Exception(f"Failed to download image from {url}")
+
+    def process_and_save_image(self, url, idx, is_first, out_folder, target_width, target_height, do_white_bg, watermark_path, is_template, vps_base_url='', vps_folder_name='', save_locally=True, product_scale=70, lock_aspect_ratio=True, prefetched_bytes=None):
         """Download, process, and optionally upload one image.
         Returns the final public URL (VPS) or local file path, or empty string on failure.
+        If prefetched_bytes is provided, skip the download step (already fetched concurrently).
         """
         try:
-            print(f"  [INFO] Downloading Image {idx}: {url}")
-            resp = None
-            for attempt in range(3):
-                try:
-                    resp = requests.get(url, stream=True, timeout=15)
-                    resp.raise_for_status()
-                    break
-                except Exception as e:
-                    print(f"  [WARN] Download failed on attempt {attempt+1}: {e}")
-                    time.sleep(2 ** attempt)
-            
-            if resp is None:
-                raise Exception(f"Failed to download image from {url} after 3 attempts (Connection Error).")
-            assert resp is not None
-            if resp.status_code != 200:
-                raise Exception(f"Failed to download image from {url} after 3 attempts (Status: {resp.status_code}).")
+            if prefetched_bytes is not None:
+                raw_bytes = prefetched_bytes
+            else:
+                print(f"  [INFO] Downloading Image {idx}: {url}")
+                raw_bytes = self._download_image_bytes(url)
                 
-            img = Image.open(BytesIO(resp.content))
+            img = Image.open(BytesIO(raw_bytes))
             img = img.convert("RGBA")
 
             # 1. Background removal to white (if first image and AI is enabled)
@@ -681,6 +714,25 @@ class ImageProcessorCore:
                 print(f"[INFO] Cloud Mode: Images for {product_id} will be directly uploaded to VPS (Local saving bypassed).")
 
             vps_folder_name = f"{platform.lower()}_{product_id}"
+
+            # --- Speed Boost: Pre-fetch all images concurrently ---
+            import concurrent.futures as _cf
+            prefetched: dict[int, bytes | None] = {}
+            print(f"[INFO] Pre-downloading {len(image_urls)} images concurrently...")
+            with _cf.ThreadPoolExecutor(max_workers=min(5, len(image_urls))) as dl_pool:
+                future_map = {}
+                for dl_idx, dl_url in enumerate(image_urls, start=1):
+                    future_map[dl_pool.submit(self._download_image_bytes, dl_url)] = dl_idx
+
+                for future in _cf.as_completed(future_map):
+                    dl_idx = future_map[future]
+                    try:
+                        prefetched[dl_idx] = future.result()
+                    except Exception as dl_e:
+                        print(f"  [WARN] Pre-download failed for image {dl_idx}: {dl_e}")
+                        prefetched[dl_idx] = None
+            print(f"[INFO] Pre-download complete: {sum(1 for v in prefetched.values() if v is not None)}/{len(image_urls)} succeeded.")
+
             result_urls = []
 
             for idx, url in enumerate(image_urls, start=1):
@@ -698,6 +750,13 @@ class ImageProcessorCore:
                     break
 
                 is_first = (idx == 1)
+                img_bytes = prefetched.get(idx)
+                if img_bytes is None:
+                    # Pre-download failed for this image, slot placeholder
+                    print(f"  [ERROR] Image {idx} skipped (download failed).")
+                    result_urls.append("")
+                    continue
+
                 final_url = self.process_and_save_image(
                     url, idx, is_first, out_folder,
                     target_width, target_height, do_white_bg,
@@ -706,7 +765,8 @@ class ImageProcessorCore:
                         vps_folder_name=vps_folder_name,
                         save_locally=save_locally,
                         product_scale=product_scale,
-                        lock_aspect_ratio=lock_aspect_ratio
+                        lock_aspect_ratio=lock_aspect_ratio,
+                        prefetched_bytes=img_bytes
                     )
                 # Slot persistence: Add placeholder if failed so others don't shift
                 result_urls.append(final_url if final_url else "")
@@ -740,7 +800,10 @@ class ImageProcessorCore:
                 except Exception as se:
                     print(f"  [WARN] Failed to update Google Sheet: {se}")
 
+            return valid_any
+
         except Exception as e:
             print(f"[FATAL] {product_id} - {str(e)}")
+            return False
 
     # --- Runner ---

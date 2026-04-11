@@ -208,7 +208,7 @@ class ImageProcessorApp(ImageProcessorCore):
         self.thread_spinbox.pack(side=tk.LEFT)
         self.thread_frame.grid_remove() # Hide initially
 
-        tk.Label(fetch_frame, text="ScraperAPI Key (Optional):").grid(row=4, column=0, sticky='e', pady=5)
+        tk.Label(fetch_frame, text="ScraperAPI Key:").grid(row=4, column=0, sticky='e', pady=5)
         self.api_key_var = tk.StringVar()
         tk.Entry(fetch_frame, textvariable=self.api_key_var, width=50).grid(row=4, column=1, sticky='w', padx=5, pady=5)
 
@@ -223,18 +223,28 @@ class ImageProcessorApp(ImageProcessorCore):
         
         tk.Label(proc_frame, text="Target Width (px):").grid(row=0, column=0, sticky='e', pady=5)
         self.target_width_var = tk.IntVar(value=1000)
-        tk.Entry(proc_frame, textvariable=self.target_width_var, width=10).grid(row=0, column=1, sticky='w', padx=5, pady=5)
+        self.width_entry = tk.Entry(proc_frame, textvariable=self.target_width_var, width=10)
+        self.width_entry.grid(row=0, column=1, sticky='w', padx=5, pady=5)
 
         tk.Label(proc_frame, text="Target Height (px):").grid(row=0, column=2, sticky='e', pady=5, padx=(10, 0))
         self.target_height_var = tk.IntVar(value=1000)
-        tk.Entry(proc_frame, textvariable=self.target_height_var, width=10).grid(row=0, column=3, sticky='w', padx=5, pady=5)
+        self.height_entry = tk.Entry(proc_frame, textvariable=self.target_height_var, width=10)
+        self.height_entry.grid(row=0, column=3, sticky='w', padx=5, pady=5)
+
+        # Aspect ratio linking — when lock is on, editing one dimension auto-adjusts the other
+        self._aspect_ratio = 1.0  # width / height ratio, updated on each valid edit
+        self._updating_ratio = False  # guard flag to prevent infinite recursion
+        self._last_edited = 'width'  # track which field was last manually edited
+
+        self.width_entry.bind('<KeyRelease>', self._on_width_changed)
+        self.height_entry.bind('<KeyRelease>', self._on_height_changed)
 
         # White background handling
         self.white_bg_var = tk.BooleanVar(value=True)
         tk.Checkbutton(proc_frame, text="Make First Image White Background (Requires rembg)", variable=self.white_bg_var).grid(row=1, column=0, columnspan=3, sticky='w', pady=2)
         
         self.lock_aspect_ratio_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(proc_frame, text="Lock Aspect Ratio (Prevents Stretching)", variable=self.lock_aspect_ratio_var).grid(row=1, column=3, sticky='w', pady=2)
+        tk.Checkbutton(proc_frame, text="Lock Aspect Ratio (Auto-adjust other dimension)", variable=self.lock_aspect_ratio_var).grid(row=1, column=3, sticky='w', pady=2)
 
         tk.Label(proc_frame, text="(Note: The background removal engine loads on the first use)", fg="gray", font=("Arial", 8)).grid(row=2, column=0, columnspan=3, sticky='w', pady=0)
 
@@ -416,6 +426,50 @@ class ImageProcessorApp(ImageProcessorCore):
         else:
             self.thread_spinbox.config(state=tk.DISABLED)
 
+    def _on_width_changed(self, event=None):
+        """When user edits width and aspect ratio is locked, auto-adjust height."""
+        if self._updating_ratio:
+            return
+        if not self.lock_aspect_ratio_var.get():
+            return
+        try:
+            w = int(self.width_entry.get())
+            if w <= 0:
+                return
+        except (ValueError, tk.TclError):
+            return
+        
+        self._last_edited = 'width'
+        
+        # Calculate new height based on the locked ratio
+        if self._aspect_ratio > 0:
+            new_h = max(1, int(round(w / self._aspect_ratio)))
+            self._updating_ratio = True
+            self.target_height_var.set(new_h)
+            self._updating_ratio = False
+
+    def _on_height_changed(self, event=None):
+        """When user edits height and aspect ratio is locked, auto-adjust width."""
+        if self._updating_ratio:
+            return
+        if not self.lock_aspect_ratio_var.get():
+            return
+        try:
+            h = int(self.height_entry.get())
+            if h <= 0:
+                return
+        except (ValueError, tk.TclError):
+            return
+        
+        self._last_edited = 'height'
+        
+        # Calculate new width based on the locked ratio
+        if self._aspect_ratio > 0:
+            new_w = max(1, int(round(h * self._aspect_ratio)))
+            self._updating_ratio = True
+            self.target_width_var.set(new_w)
+            self._updating_ratio = False
+
     def make_template_transparent(self):
         """Open a template PNG and flood-fill the center white area with transparency.
         Saves a new file with '_transparent.png' suffix into the templates folder.
@@ -540,6 +594,15 @@ class ImageProcessorApp(ImageProcessorCore):
     # --- Scraping Methods ---
 
 
+    def remove_asin_from_ui(self, pid: str):
+        """Remove a successfully processed ASIN from the bulk text box."""
+        current_text = self.bulk_text.get("1.0", tk.END)
+        lines = current_text.split('\n')
+        # Filter out the matching ASIN (exact match ignoring whitespace)
+        new_lines = [line for line in lines if line.strip() != pid.strip()]
+        self.bulk_text.delete("1.0", tk.END)
+        self.bulk_text.insert(tk.END, "\n".join(new_lines))
+
     def run_process(self):
         platform = self.platform_var.get()
         out_base = self.out_dir_var.get().strip()
@@ -617,7 +680,7 @@ class ImageProcessorApp(ImageProcessorCore):
 
         # Execute processing
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
+            future_to_pid = {}
             for row_idx, raw_pid in enumerate(product_ids, start=1):
                 if self.stop_event.is_set():
                     break
@@ -644,24 +707,29 @@ class ImageProcessorApp(ImageProcessorCore):
                         print(f"  [INFO] Auto-switching to Amazon for ID: {pid}")
                         current_platform = "Amazon"
 
-                futures.append(executor.submit(
+                future = executor.submit(
                     self.process_single_product, # type: ignore
                     pid, current_platform, out_base, api_key,
                     target_width, target_height,
                     do_white_bg, watermark_path, is_template,
                     vps_base_url, sheet, row_idx, product_scale, lock_aspect_ratio
-                ))
+                )
+                future_to_pid[future] = pid
 
             # Wait for all to complete
-            for future in concurrent.futures.as_completed(futures):
+            for future in concurrent.futures.as_completed(future_to_pid):
                 if self.stop_event.is_set():
-                    for f in futures:
+                    for f in future_to_pid:
                         f.cancel()
                     break
+                pid = future_to_pid[future]
                 try:
-                    future.result()
+                    success = future.result()
+                    if success and mode == "Bulk":
+                        # Success! Schedule UI update to remove it from the box.
+                        self.root.after(0, self.remove_asin_from_ui, pid)
                 except Exception as e:
-                    print(f"[FATAL] Thread error: {e}")
+                    print(f"[FATAL] Thread error for {pid}: {e}")
 
         print("\n[FINISH] Process complete.\n")
         self.reset_ui_state()
